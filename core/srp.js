@@ -27,9 +27,34 @@ sjcl.keyexchange.srp = {
    */
   makeVerifier: function(I, P, s, group) {
     var x;
-    x = sjcl.keyexchange.srp.makeX(I, P, s);
+    x = sjcl.keyexchange.srp._makeX(I, P, s);
     x = sjcl.bn.fromBits(x);
-    return group.g.powermod(x, group.N);
+    return group.g.powermod(x, group.N).toBits();
+  },
+  
+  _pad: function(p, N) {
+    var pad = new Array(N.length);
+	var i = 0;
+	for(i = 0; i < pad.length; ++i) {
+	  pad[i] = 0;
+	}
+	
+	pad = sjcl.bitArray.bitSlice(pad, 0, sjcl.bitArray.bitLength(N) - sjcl.bitArray.bitLength(p));
+	pad = sjcl.bitArray.concat(pad, p);
+	return pad;
+  },
+  
+  /**
+   * k = SHA1( N | pad(g) )
+   * @param {Object} group The SRP group. Use sjcl.keyexchange.srp.knownGroup
+                           to obtain this object.
+   * @return {Object} A bitArray of SRP k
+   */
+  _makeK: function(group) {
+	var N = group.N.toBits();
+	var g = group.g.toBits();
+	
+	return sjcl.hash.sha1.hash(sjcl.bitArray.concat(N, sjcl.keyexchange.srp._pad(g, N)));
   },
 
   /**
@@ -40,9 +65,78 @@ sjcl.keyexchange.srp = {
    * @param {Object} s A bitArray of the salt.
    * @return {Object} A bitArray of SRP x.
    */
-  makeX: function(I, P, s) {
+  _makeX: function(I, P, s) {
     var inner = sjcl.hash.sha1.hash(I + ':' + P);
     return sjcl.hash.sha1.hash(sjcl.bitArray.concat(s, inner));
+  },
+  
+  /**
+   * k = SHA1( pad(A) | pad(B) )
+   * @param {Object} group The SRP group. Use sjcl.keyexchange.srp.knownGroup
+                           to obtain this object.
+   * @return {Object} A bitArray of SRP u
+   */
+  _makeU: function(A, B, group) {
+	var N = group.N.toBits();
+	return sjcl.hash.sha1.hash(sjcl.bitArray.concat(sjcl.keyexchange.srp._pad(A, N), sjcl.keyexchange.srp._pad(B, N)));
+  },
+  
+  /**
+   * A = g ^ a mod N
+   * @param {Object} a A bitArray of client random SRP a
+   * @return {Object} A bitArray of SRP A
+   */
+  makeA: function(a, group) {
+	a = sjcl.bn.fromBits(a);
+	return group.g.powermod(a, group.N).toBits();
+  },
+  
+  /**
+   * (B − k(g ^ x mod N)) ^ (a + ux) mod N
+   */
+  makeClientKey: function(I, P, s, a, A, B, group) {	
+	var x = sjcl.bn.fromBits(sjcl.keyexchange.srp._makeX(I, P, s));
+	var k = sjcl.bn.fromBits(sjcl.keyexchange.srp._makeK(group));
+	var u = sjcl.bn.fromBits(sjcl.keyexchange.srp._makeU(A, B, group));
+	
+	var key = group.g.powermod(x, group.N);
+	key = key.mulmod(k, group.N);
+	key = sjcl.bn.fromBits(B).sub(key).mod(group.N);
+	
+	var power = u.mul(x);
+	power = sjcl.bn.fromBits(a).add(power);
+	key = key.powermod(power, group.N);
+	return key.toBits();
+  },
+  
+  /**
+   * H[H(N) XOR H(g) | H(username) | s | A | B | K]
+   */
+  makeM1: function(I, s, A, B, K, group) {
+	var hN = sjcl.hash.sha1.hash(group.N.toBits());
+	var hg = sjcl.hash.sha1.hash(group.g.toBits());
+	var i = 0;
+	for(i = 0; i < hN.length; ++i) {
+	  hN[i] = hN[i] ^ hg[i];
+	}
+	
+	var out = sjcl.bitArray.concat(hN, sjcl.hash.sha1.hash(I));
+	out = sjcl.bitArray.concat(out, s);
+	out = sjcl.bitArray.concat(out, A);
+	out = sjcl.bitArray.concat(out, B);
+	out = sjcl.bitArray.concat(out, K);
+	out = sjcl.hash.sha1.hash(out);
+	return out;
+  },
+  
+  /**
+   * H(A | M1 | K) 
+   */
+  makeM2: function(A, M1, K) {
+	var out = sjcl.bitArray.concat(A, M1);
+	out = sjcl.bitArray.concat(out, K);
+	out = sjcl.hash.sha1.hash(out);
+	return out;
   },
 
   /**
